@@ -48,8 +48,16 @@ class AgentSupervisor:
     # ------------------------------------------------------------------
 
     async def on_task_assigned(self, agent_name: AgentName, task: Task) -> None:
+        if agent_name is AgentName.decision:
+            # decision has no worker loop — it plans and re-queues tasks
+            # itself; handing it a task dead-ends it. Re-queue as unowned.
+            log.warning("supervisor.decision_task_redirect", task=task.id)
+            task.assignee = AgentName.hermes
+            async with self._lock:
+                self._pending[AgentName.hermes].append(task)
+            return
         async with self._lock:
-            self._pending[agent_name].append(task)
+            self._pending.setdefault(agent_name, []).append(task)
 
     def next_for(self, agent_name: AgentName) -> Task | None:
         q = self._pending.get(agent_name)

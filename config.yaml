@@ -1,0 +1,107 @@
+# ═══════════════════════════════════════════════════════════════════
+#  Swiggy Hunter v2 — runtime config
+# ═══════════════════════════════════════════════════════════════════
+
+model:
+  name: GLM-5.3-Flash
+  base_url: https://top-tools-ai.com/v1
+  max_output_tokens: 16384
+  default_temperature: 0.6
+  thinking_window:
+    enabled: true
+    min_seconds: 12
+    max_seconds: 32
+    agents: ["decision", "attacker"]     # only main agents think deeply
+
+rate_limit:
+  requests_per_minute: 45
+  safety_margin: 1
+  max_concurrent: 4
+
+budget:
+  daily_token_limit: 1000000000          # 1B tokens/day
+  warn_at_percent: 85
+
+reporter:
+  interval_minutes: 30
+
+target:
+  domain: swiggy.com
+  scope:
+    - "swiggy.com"
+    - "*.swiggy.com"
+    - "swiggy.in"
+    - "*.swiggy.in"
+
+stealth:
+  enabled: true
+  impersonate: ["chrome124", "chrome125", "chrome126", "firefox133", "safari18_0"]
+  rotate_fingerprint_per_session: true
+  human_timing:
+    enabled: true
+    base_delay_ms: 350
+    jitter_ms: 700
+    think_pauses_prob: 0.18
+    think_pause_min_s: 1.4
+    think_pause_max_s: 4.8
+    burst_pause_prob: 0.08
+    burst_pause_min_s: 6.0
+    burst_pause_max_s: 22.0
+  referer_chain: true
+  respect_robots: false         # targeted authorized testing
+  honor_retry_after: true
+  tls_impersonation: true
+  header_randomization: true
+
+auth:
+  # ---- OTP flow (primary) ----
+  otp:
+    enabled: true
+    send_endpoint: "https://www.swiggy.com/api/auth/send-otp"
+    verify_endpoint: "https://www.swiggy.com/api/auth/verify-otp"
+    resend_cooldown_s: 45
+    # payload keys are configurable so agents can adapt if swiggy changes
+    phone_field: "mobile"
+    otp_field: "otp"
+  # ---- Cookie flow (fallback / import) ----
+  cookie:
+    enabled: true
+    # if user pastes cookies via /login, they go here
+  vault:
+    # encrypted-at-rest session storage
+    enabled: true
+    cipher: "fernet"
+
+browser:
+  # headless browser for JS-heavy endpoints
+  enabled: true
+  engine: "playwright"
+  headless: true
+  timezone: "Asia/Kolkata"
+  locale: "en-IN"
+  viewport: { width: 1366, height: 800 }
+  user_data_dir: "./data/browser_profile"
+
+tools_autoload:
+  auto_install: true
+  allowed_installers: ["apt-get", "pip", "pip3", "go", "cargo", "npm", "git"]
+  prefer_binaries: ["curl", "jq", "ffuf", "nmap", "nuclei", "httpx", "subfinder"]
+
+paths:
+  data_dir: ./data
+  log_dir: ./logs
+  blackboard: ./data/state.md
+  findings: ./data/findings.json
+  usage: ./data/usage.json
+  directives: ./data/directives.jsonl
+
+agents:
+  decision:      { temperature: 0.45, max_iterations: 20 }
+  recon:         { temperature: 0.40, max_iterations: 30 }
+  business_logic: { temperature: 0.55, max_iterations: 35 }
+  research:      { temperature: 0.50, max_iterations: 25 }
+  validation:    { temperature: 0.35, max_iterations: 30 }
+  attacker:      { temperature: 0.55, max_iterations: 40 }
+  hermes:        { temperature: 0.60, max_iterations: 45 }
+
+autostart: true

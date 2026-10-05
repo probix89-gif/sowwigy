@@ -21,8 +21,8 @@ from typing import Any
 from ..config import AppConfig
 from ..logging_setup import get_logger
 from ..state.schemas import SessionInfo
-from ..stealth.session import StealthSession
 from ..stealth.fingerprint import FingerprintPool
+from ..stealth.session import StealthSession
 from .cookies import CookieImporter, validate_cookies_async
 from .otp import OtpFlow, OtpFlowError
 from .vault import SessionVault
@@ -57,6 +57,9 @@ class AuthManager:
             timing_cfg=cfg.stealth.human_timing,
             name="primary",
             referer_chain=cfg.stealth.referer_chain,
+            profile=cfg.stealth.tls_profile,
+            tls_enabled=cfg.stealth.tls_enabled,
+            allow_fallback=cfg.stealth.tls_fallback_allowed,
         )
         self.vault = SessionVault(
             data_dir=cfg.paths.data_dir,

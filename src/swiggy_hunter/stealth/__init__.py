@@ -1,9 +1,35 @@
-from .fingerprint import Fingerprint, FingerprintPool, build_default_pool
-from .headers import HeaderBuilder
-from .timing import TimingModel
 from .behavior import Behavior
-from .session import StealthSession, StealthResponse
-from .tls import make_curl_session
+from .fingerprint import (
+    DEFAULT_PROFILE_NAME,
+    Fingerprint,
+    FingerprintPool,
+    ProfileManager,
+    build_default_pool,
+    default_profile_manager,
+    get_profile,
+    get_profile_for_fingerprint,
+    list_profiles,
+    register_profile,
+)
+from .headers import HeaderBuilder
+from .session import StealthResponse, StealthSession, create_session
+from .timing import TimingModel
+from .tls import (
+    TLSConnectionError,
+    TLSError,
+    TLSInitializationError,
+    TLSProfile,
+    TLSProfileError,
+    TLSProtocolError,
+    TLSUnsupportedOptionError,
+    TLSVerificationError,
+    create_client,
+    engine_name,
+    get_supported_curl_targets,
+    make_curl_session,
+    sanitize_headers,
+    sanitize_url,
+)
 
 __all__ = [
     "Fingerprint",
@@ -14,5 +40,26 @@ __all__ = [
     "Behavior",
     "StealthSession",
     "StealthResponse",
+    "create_session",
     "make_curl_session",
+    "create_client",
+    "engine_name",
+    "get_supported_curl_targets",
+    "sanitize_headers",
+    "sanitize_url",
+    "TLSProfile",
+    "ProfileManager",
+    "default_profile_manager",
+    "DEFAULT_PROFILE_NAME",
+    "get_profile",
+    "list_profiles",
+    "register_profile",
+    "get_profile_for_fingerprint",
+    "TLSError",
+    "TLSProfileError",
+    "TLSUnsupportedOptionError",
+    "TLSInitializationError",
+    "TLSVerificationError",
+    "TLSConnectionError",
+    "TLSProtocolError",
 ]

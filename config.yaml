@@ -35,7 +35,10 @@ target:
 
 stealth:
   enabled: true
-  impersonate: ["chrome124", "chrome125", "chrome126", "firefox133", "safari18_0"]
+  tls_enabled: true
+  tls_profile: "chrome124"
+  tls_fallback_allowed: false
+  impersonate: ["chrome124", "chrome120", "chrome131", "firefox133", "safari18_0"]
   rotate_fingerprint_per_session: true
   human_timing:
     enabled: true

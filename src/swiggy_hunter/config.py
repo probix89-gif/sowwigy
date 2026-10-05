@@ -13,7 +13,6 @@ import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 # ==========================================================================
 # sub-models
 # ==========================================================================
@@ -67,8 +66,11 @@ class HumanTimingCfg(BaseModel):
 
 class StealthCfg(BaseModel):
     enabled: bool = True
+    tls_enabled: bool = True
+    tls_profile: str = "chrome124"
+    tls_fallback_allowed: bool = False
     impersonate: list[str] = Field(
-        default_factory=lambda: ["chrome124", "chrome125", "chrome126"]
+        default_factory=lambda: ["chrome124", "chrome120", "chrome131", "firefox133", "safari18_0"]
     )
     rotate_fingerprint_per_session: bool = True
     human_timing: HumanTimingCfg = Field(default_factory=HumanTimingCfg)
@@ -154,6 +156,9 @@ class Secrets(BaseSettings):
     swiggy_phone: str = ""
     swiggy_cookie: str = ""
     swiggy_session_vault_key: str = ""
+    tls_enabled: bool | None = None
+    tls_profile: str = ""
+    tls_fallback_allowed: bool | None = None
 
 
 # ==========================================================================
@@ -178,6 +183,8 @@ class AppConfig(BaseModel):
 
 
 def load_config(path: str | Path = "config.yaml") -> AppConfig:
+    import os
+
     p = Path(path)
     raw: dict[str, Any] = {}
     if p.exists():
@@ -190,6 +197,25 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
     # fallback: env override for base_url if set
     if cfg.secrets.glm_base_url:
         cfg.model.base_url = cfg.secrets.glm_base_url
+
+    # TLS environment overrides
+    env_tls_enabled = os.getenv("TLS_ENABLED")
+    if env_tls_enabled is not None:
+        cfg.stealth.tls_enabled = env_tls_enabled.strip().lower() in ("1", "true", "yes")
+    elif cfg.secrets.tls_enabled is not None:
+        cfg.stealth.tls_enabled = cfg.secrets.tls_enabled
+
+    env_tls_profile = os.getenv("TLS_PROFILE")
+    if env_tls_profile:
+        cfg.stealth.tls_profile = env_tls_profile.strip()
+    elif cfg.secrets.tls_profile:
+        cfg.stealth.tls_profile = cfg.secrets.tls_profile
+
+    env_tls_fallback = os.getenv("TLS_FALLBACK_ALLOWED")
+    if env_tls_fallback is not None:
+        cfg.stealth.tls_fallback_allowed = env_tls_fallback.strip().lower() in ("1", "true", "yes")
+    elif cfg.secrets.tls_fallback_allowed is not None:
+        cfg.stealth.tls_fallback_allowed = cfg.secrets.tls_fallback_allowed
 
     Path(cfg.paths.data_dir).mkdir(parents=True, exist_ok=True)
     Path(cfg.paths.log_dir).mkdir(parents=True, exist_ok=True)

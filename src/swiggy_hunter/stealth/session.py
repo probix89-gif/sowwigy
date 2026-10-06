@@ -221,15 +221,41 @@ class StealthSession:
         return dict(self._cookies)
 
     def _absorb_set_cookie(self, headers: dict[str, str] | Any) -> None:
-        """Parse Set-Cookie headers from any HTTP client's response."""
-        try:
-            raw_list = headers.getall("set-cookie") if hasattr(headers, "getall") else None
-        except Exception:
-            raw_list = None
-        if raw_list is None:
-            sc = headers.get("set-cookie") or headers.get("Set-Cookie")
+        """Parse Set-Cookie headers from any HTTP client's response.
+
+        Handles:
+          - curl_cffi Headers (multi_items / getlist)
+          - aiohttp CIMultiDict (getall)
+          - WAF-retry path where headers are already a plain dict
+        """
+        raw_list: list[str] = []
+        # curl_cffi Headers — multi_items preserves every duplicate header
+        if hasattr(headers, "multi_items"):
+            try:
+                raw_list = [v for k, v in headers.multi_items()
+                            if str(k).lower() == "set-cookie"]
+            except Exception:
+                raw_list = []
+        # aiohttp-style getall
+        if not raw_list and hasattr(headers, "getall"):
+            try:
+                raw_list = list(headers.getall("set-cookie") or [])
+            except Exception:
+                raw_list = []
+        # curl_cffi also exposes getlist
+        if not raw_list and hasattr(headers, "getlist"):
+            try:
+                raw_list = list(headers.getlist("set-cookie") or [])
+            except Exception:
+                raw_list = []
+        if not raw_list:
+            sc = None
+            try:
+                sc = headers.get("set-cookie") or headers.get("Set-Cookie")
+            except Exception:
+                sc = None
             raw_list = [sc] if sc else []
-        for raw in raw_list or []:
+        for raw in raw_list:
             if not raw:
                 continue
             first = raw.split(";")[0].strip()
@@ -298,6 +324,10 @@ class StealthSession:
                 timeout=timeout,
                 allow_redirects=allow_redirects,
             )
+            # capture the RAW headers object BEFORE dict conversion —
+            # dict(headers) keeps only the first Set-Cookie and silently
+            # drops the rest (Swiggy sets ~10 cookies incl. the session tid)
+            raw_headers = getattr(resp, "headers", None)
         except Exception as e:
             elapsed = int((time.monotonic() - started) * 1000)
             self.behavior.post_response(0)
@@ -358,6 +388,7 @@ class StealthSession:
                     allow_redirects=allow_redirects,
                 )
                 status = int(getattr(resp, "status_code", 0) or getattr(resp, "status", 0) or 0)
+                raw_headers = getattr(resp, "headers", None)
                 resp_headers = dict(getattr(resp, "headers", {}) or {})
                 body = getattr(resp, "content", None)
                 if body is None:
@@ -375,7 +406,7 @@ class StealthSession:
         self.behavior.post_response(status, retry_after=retry_after)
 
         # 6. absorb cookies + referer chain
-        self._absorb_set_cookie(resp_headers)
+        self._absorb_set_cookie(raw_headers if raw_headers is not None else resp_headers)
         if 200 <= status < 400:
             self.headers.remember(full_url)
 

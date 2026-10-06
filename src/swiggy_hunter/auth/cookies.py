@@ -37,6 +37,7 @@ def parse_cookie_string(raw: str) -> dict[str, str]:
       - "a=1\\nb=2"
       - JSON: {"a": "1", "b": "2"}
       - Netscape cookie file lines (tab-separated) — simplified
+      - a bare token (no '=') — stored as {"token": <value>}
     """
     raw = raw.strip()
     if not raw:
@@ -68,7 +69,12 @@ def parse_cookie_string(raw: str) -> dict[str, str]:
         parts = [raw]
 
     for p in parts:
-        if not p or "=" not in p:
+        if not p:
+            continue
+        if "=" not in p:
+            # bare token — likely a session value pasted without its name
+            if len(p) >= 16:
+                out["token"] = p
             continue
         k, _, v = p.partition("=")
         out[k.strip()] = v.strip()

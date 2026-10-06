@@ -58,36 +58,52 @@ class WafGate:
     def solved(self) -> bool:
         return bool(self._cookies.get(WAF_TOKEN_COOKIE))
 
-    async def solve(self, timeout_s: float = 60.0) -> bool:
-        """Solve the WAF challenge and cache the cookie set."""
+    async def solve(self, timeout_s: float = 60.0, retries: int = 2) -> bool:
+        """Solve the WAF challenge and cache the cookie set.
+
+        Retries the whole solve on failure — on a fresh container the
+        browser may still be starting (or a transient goto timeout may
+        hit), and one failed attempt previously left the gate empty
+        until the next 202."""
         async with self._solving:
             # another task may have just solved it
             if self.solved and (time.time() - self._solved_at) < _SOLVE_COOLDOWN_S:
                 return True
-            log.info("waf.solve_start")
-            try:
-                if self._browser is None:
-                    self._browser = Browser(self._fp, self._cfg)
-                    await self._browser.start()
-                res = await self._browser.goto(WAF_HOME, wait_until="domcontentloaded",
-                                               timeout_ms=int(timeout_s * 1000))
-                # challenge.js runs automatically; give it time to mint the token
-                deadline = time.time() + timeout_s
-                while time.time() < deadline:
-                    self._cookies = await self._browser.export_cookies()
-                    if self._cookies.get(WAF_TOKEN_COOKIE):
-                        break
-                    await asyncio.sleep(1.5)
-                ok = self.solved
-                self._solved_at = time.time()
-                if ok:
-                    log.info("waf.solved", cookies=len(self._cookies))
-                else:
-                    log.warning("waf.solve_timeout", waited_s=timeout_s)
-                return ok
-            except Exception:
-                log.exception("waf.solve_failed")
-                return False
+            for attempt in range(1, retries + 1):
+                log.info("waf.solve_start", attempt=attempt)
+                try:
+                    if self._browser is None:
+                        self._browser = Browser(self._fp, self._cfg)
+                        await self._browser.start()
+                    res = await self._browser.goto(
+                        WAF_HOME, wait_until="domcontentloaded",
+                        timeout_ms=int(timeout_s * 1000))
+                    # challenge.js runs automatically; give it time to mint the token
+                    deadline = time.time() + timeout_s
+                    while time.time() < deadline:
+                        self._cookies = await self._browser.export_cookies()
+                        if self._cookies.get(WAF_TOKEN_COOKIE):
+                            break
+                        await asyncio.sleep(1.5)
+                    self._solved_at = time.time()
+                    if self.solved:
+                        log.info("waf.solved", cookies=len(self._cookies),
+                                 attempt=attempt)
+                        return True
+                    log.warning("waf.solve_timeout", waited_s=timeout_s,
+                                attempt=attempt)
+                except Exception:
+                    log.exception("waf.solve_failed", attempt=attempt)
+                    # a broken browser object won't recover — rebuild it
+                    try:
+                        if self._browser:
+                            await self._browser.stop()
+                    except Exception:
+                        pass
+                    self._browser = None
+                if attempt < retries:
+                    await asyncio.sleep(3.0)
+            return False
 
     async def apply(self, session: Any) -> bool:
         """Push solved cookies into a StealthSession."""

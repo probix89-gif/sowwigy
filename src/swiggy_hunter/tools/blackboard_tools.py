@@ -1,5 +1,10 @@
 """
 Blackboard-backed tools — the way agents write findings and update tasks.
+
+report_finding is GATED: every candidate passes FindingGate before it can
+become a Finding. Candidates that fail the gate are preserved as internal
+Observations (never silently dropped) with a machine-readable reason.
+Agents cannot bypass the gate — severity is normalized programmatically.
 """
 from __future__ import annotations
 
@@ -7,11 +12,18 @@ import json
 import time
 from typing import Any
 
+from ..scanner.dedup import FindingDeduplicator
+from ..scanner.triage import (
+    FindingGate,
+    GateDecision,
+    observation_from_candidate,
+)
 from ..state.blackboard import Blackboard
 from ..state.schemas import (
     AgentName,
     Finding,
     FindingStatus,
+    Observation,
     Severity,
     Task,
     TaskStatus,
@@ -22,9 +34,18 @@ from .base import Tool, ToolResult
 class ReportFindingTool(Tool):
     name = "report_finding"
     description = (
-        "Report a security finding. Include exact evidence — raw requests, "
-        "responses, file paths, line references. Findings are deduplicated "
-        "automatically. Use this for every concrete observation."
+        "Report a candidate HIGH-IMPACT business-logic vulnerability. "
+        "REQUIREMENTS: (1) the flaw must map to a high-impact category — "
+        "coupon/discount abuse, cart/checkout/payment/order/refund/wallet "
+        "integrity, or authorization leading to financial manipulation; "
+        "(2) raw request+response evidence showing the violated business "
+        "invariant in the FINAL state; (3) numbered reproduction steps; "
+        "(4) a description asserting what business rule was violated and "
+        "what the money/state outcome was. Weak signals (status changed, "
+        "extra field, missing validation, undocumented endpoint, accepted "
+        "parameter) are auto-routed to internal observations, NOT findings. "
+        "Findings are triaged, deduplicated, and severity-normalized "
+        "automatically — you cannot bypass the gate."
     )
     parameters = {
         "type": "object",
@@ -32,60 +53,164 @@ class ReportFindingTool(Tool):
             "title": {"type": "string"},
             "category": {
                 "type": "string",
-                "description": "recon | business_logic | auth | idor | hermes_flow | research | other",
+                "description": (
+                    "high-impact category: coupon_abuse | discount_abuse | "
+                    "pricing_integrity | cart_total_integrity | "
+                    "checkout_integrity | order_integrity | payment_integrity | "
+                    "refund_integrity | wallet_integrity | stored_value_abuse | "
+                    "authorization_to_financial_state. Non-impact categories "
+                    "(recon/research/observation) are stored as observations."
+                ),
             },
             "severity": {"type": "string",
                          "enum": ["info", "low", "medium", "high", "critical"]},
             "endpoint": {"type": "string"},
             "method": {"type": "string"},
-            "description": {"type": "string"},
+            "description": {
+                "type": "string",
+                "description": (
+                    "MUST state the violated business invariant and the final "
+                    "financial/state outcome, e.g. 'server computed total ₹0 "
+                    "after quantity=-2; order was placed and charged ₹0'."
+                ),
+            },
             "evidence": {"type": "array", "items": {"type": "string"}},
             "repro_steps": {"type": "array", "items": {"type": "string"}},
             "tags": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["title", "category", "description"],
+        "required": ["title", "category", "description", "evidence", "repro_steps"],
     }
 
-    def __init__(self, blackboard: Blackboard, agent_name: AgentName):
+    def __init__(self, blackboard: Blackboard, agent_name: AgentName,
+                 gate: FindingGate | None = None):
         self.blackboard = blackboard
         self.agent_name = agent_name
+        self.gate = gate
+
+    def _gate(self) -> FindingGate:
+        # lazily bind to the shared deduplicator if the orchestrator supplied
+        # one on the blackboard toolset; otherwise a private instance
+        if self.gate is None:
+            shared = getattr(self.blackboard, "_shared_gate", None)
+            self.gate = shared if isinstance(shared, FindingGate) else FindingGate()
+        return self.gate
 
     async def run(self, **kwargs: Any) -> ToolResult:
+        title = kwargs.get("title") or ""
+        category = kwargs.get("category") or "other"
+        description = kwargs.get("description") or ""
+        evidence = [str(e) for e in (kwargs.get("evidence") or [])]
+        repro = [str(s) for s in (kwargs.get("repro_steps") or [])]
+        tags = [str(t) for t in (kwargs.get("tags") or [])]
+        endpoint = kwargs.get("endpoint")
+
         try:
-            f = Finding(
-                title=kwargs["title"],
-                category=kwargs.get("category", "other"),
-                severity=Severity(kwargs.get("severity", "info")),
-                endpoint=kwargs.get("endpoint"),
-                method=kwargs.get("method"),
-                description=kwargs.get("description", ""),
-                evidence=list(kwargs.get("evidence") or []),
-                repro_steps=list(kwargs.get("repro_steps") or []),
-                discovered_by=self.agent_name,
-                tags=list(kwargs.get("tags") or []),
+            claimed = Severity(kwargs.get("severity", "info"))
+        except ValueError:
+            claimed = Severity.info
+
+        try:
+            result = self._gate().evaluate(
+                title=title, category=category, description=description,
+                evidence=evidence, repro_steps=repro,
+                claimed_severity=claimed, tags=tags, endpoint=endpoint,
             )
-            await self.blackboard.upsert_finding(f)
-            return ToolResult(ok=True,
-                              output=f"finding recorded: {f.id} ({f.severity.value})",
-                              meta={"finding_id": f.id})
         except Exception as e:
-            return ToolResult(ok=False, output="", error=str(e))
+            return ToolResult(ok=False, output="",
+                              error=f"triage gate error: {e}")
+
+        # ---- REJECT is never used for deletion: everything survives as an
+        # observation so evidence is never lost.
+        obs = Observation(**observation_from_candidate(
+            title=title, category=category, description=description,
+            evidence=evidence, repro_steps=repro,
+            agent_name=self.agent_name.value, endpoint=endpoint, tags=tags,
+            gate_reason=result.reason,
+        ))
+        await self.blackboard.add_observation(obs)
+
+        if result.decision is not GateDecision.accept:
+            return ToolResult(
+                ok=False,
+                output=(
+                    f"NOT recorded as a finding — {result.decision.value}: "
+                    f"{result.reason} "
+                    f"(preserved as internal observation {obs.id}; other agents "
+                    f"can find it via query_blackboard observations)"
+                ),
+                meta={"observation_id": obs.id, "gate": result.decision.value},
+            )
+
+        # ---- ACCEPT: build the real finding, gate-normalized -------------
+        f = Finding(
+            title=title,
+            category=result.normalized_category or category,
+            severity=result.adjusted_severity or claimed,
+            endpoint=endpoint,
+            method=kwargs.get("method"),
+            description=description,
+            evidence=evidence,
+            repro_steps=repro,
+            discovered_by=self.agent_name,
+            tags=tags,
+            meta={
+                "gate": {
+                    "impact_category": result.impact.category.value if result.impact else None,
+                    "impact_score": result.impact.score if result.impact else 0,
+                    "evidence_quality": result.evidence.evidence_quality if result.evidence else 0,
+                    "verified_impact": result.fp.verified_impact if result.fp else False,
+                    "observation_id": obs.id,
+                },
+            },
+        )
+
+        # root-cause dedup: merge into an existing finding when signatures match
+        dedup = self._gate().dedup
+        existing_id = result.duplicate_of or dedup.lookup(f)
+        if existing_id:
+            existing = await self.blackboard.get_finding(existing_id)
+            if existing:
+                merged = dedup.merge(existing, f)
+                await self.blackboard.upsert_finding(merged)
+                return ToolResult(
+                    ok=True,
+                    output=(
+                        f"merged into existing root-cause finding {existing_id} "
+                        f"(same flaw, another manifestation). Evidence appended."
+                    ),
+                    meta={"finding_id": existing_id, "merged": True},
+                )
+
+        await self.blackboard.upsert_finding(f)
+        dedup.register(f)
+        return ToolResult(
+            ok=True,
+            output=(
+                f"finding accepted: {f.id} [{f.severity.value}] "
+                f"category={f.category}. Awaiting validation — it will only be "
+                f"reported after independent reproduction."
+            ),
+            meta={"finding_id": f.id},
+        )
 
 
 class QueryBlackboardTool(Tool):
     name = "query_blackboard"
     description = (
-        "Read blackboard state. slice: 'summary' | 'findings' | 'tasks' "
-        "| 'agents' | 'narrative'."
+        "Read blackboard state. slice: 'summary' | 'findings' | 'observations' "
+        "| 'tasks' | 'agents' | 'narrative'. Use observations to find "
+        "previously collected evidence that did not qualify as a finding."
     )
     parameters = {
         "type": "object",
         "properties": {
             "slice": {"type": "string",
-                      "enum": ["summary", "findings", "tasks", "agents", "narrative"],
+                      "enum": ["summary", "findings", "observations", "tasks", "agents", "narrative"],
                       "default": "summary"},
             "filter_status": {"type": "string"},
             "filter_agent": {"type": "string"},
+            "search": {"type": "string",
+                       "description": "keyword search (observations slice)"},
             "limit": {"type": "integer", "default": 50},
         },
     }
@@ -102,6 +227,7 @@ class QueryBlackboardTool(Tool):
         if slc == "summary":
             findings = await self.blackboard.list_findings()
             tasks = await self.blackboard.list_tasks()
+            observations = await self.blackboard.list_observations(limit=1000)
             agents = await self.blackboard.agent_statuses()
             sev: dict[str, int] = {}
             for f in findings:
@@ -112,6 +238,8 @@ class QueryBlackboardTool(Tool):
             out = {
                 "findings_total": len(findings),
                 "findings_by_severity": sev,
+                "observations_total": len(observations),
+                "note": "observations are internal evidence that did not pass the finding gate",
                 "tasks_total": len(tasks),
                 "tasks_by_status": st,
                 "agents": [{"name": a.name.value, "state": a.state} for a in agents],
@@ -125,6 +253,17 @@ class QueryBlackboardTool(Tool):
             if filt_agent:
                 findings = [f for f in findings if f.discovered_by.value == filt_agent]
             payload = [f.model_dump(mode="json") for f in findings[:limit]]
+            return ToolResult(ok=True, output=json.dumps(payload, indent=2))
+
+        if slc == "observations":
+            search = kwargs.get("search")
+            if search:
+                obs = await self.blackboard.find_observations(search, limit=limit)
+            else:
+                obs = await self.blackboard.list_observations(limit=limit)
+            if filt_agent:
+                obs = [o for o in obs if o.agent == filt_agent]
+            payload = [o.model_dump(mode="json") for o in obs]
             return ToolResult(ok=True, output=json.dumps(payload, indent=2))
 
         if slc == "tasks":
@@ -271,7 +410,13 @@ class AnnotateFindingTool(Tool):
 
 
 def register_blackboard_tools(reg, blackboard: Blackboard, agent_name: AgentName) -> None:
-    reg.register(ReportFindingTool(blackboard, agent_name))
+    # one shared gate + deduplicator across ALL agents — a manifestation of
+    # the same root cause found by different agents merges into one finding
+    shared = getattr(blackboard, "_shared_gate", None)
+    if not isinstance(shared, FindingGate):
+        shared = FindingGate()
+        blackboard._shared_gate = shared  # type: ignore[attr-defined]
+    reg.register(ReportFindingTool(blackboard, agent_name, gate=shared))
     reg.register(QueryBlackboardTool(blackboard))
     reg.register(UpdateTaskTool(blackboard))
     reg.register(AddTaskTool(blackboard, agent_name))

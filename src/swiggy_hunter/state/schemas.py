@@ -65,6 +65,27 @@ class Finding(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class Observation(BaseModel):
+    """Internal evidence that did NOT pass the finding gate.
+
+    Low-level observations (endpoint discoveries, weak anomalies, partial
+    evidence) are preserved here so future agents can use them as
+    building blocks — without polluting the findings pipeline."""
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:10])
+    title: str
+    category: str = "other"
+    description: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    repro_steps: list[str] = Field(default_factory=list)
+    endpoint: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    agent: str = ""
+    impact_category: str | None = None
+    impact_score: float = 0.0
+    gate_reason: str = ""
+    created_at: float = Field(default_factory=time.time)
+
+
 class Task(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:10])
     title: str

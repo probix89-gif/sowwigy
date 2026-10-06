@@ -74,6 +74,25 @@ class ReportBuilder:
                 lines.extend(self._render_finding(f))
             lines.append("")
 
+        # internal observations — preserved evidence that never became a
+        # finding (kept for chain-building, clearly separated from findings)
+        observations = await self.blackboard.list_observations(limit=100)
+        if observations:
+            lines.append("## Internal Observations (not findings)")
+            lines.append(
+                "_Evidence collected by agents that did not pass the "
+                "high-impact triage gate. Kept for correlation — a chain "
+                "of observations may become a finding later._"
+            )
+            lines.append("")
+            for o in observations[:30]:
+                lines.append(
+                    f"- `{o.id}` **{o.title[:80]}** — {o.gate_reason[:120]}"
+                )
+            if len(observations) > 30:
+                lines.append(f"- …and {len(observations) - 30} more")
+            lines.append("")
+
         return "\n".join(lines)
 
     def _render_finding(self, f: Finding) -> list[str]:

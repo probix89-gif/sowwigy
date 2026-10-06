@@ -153,9 +153,12 @@ class BaseAgent:
             f"# Task\n{task_block}\n\n"
             f"# Shared State\n{digest}\n\n"
             f"# Runtime\n{self._runtime_digest()}\n\n"
-            f"Work the task. Use tools decisively. Report findings as you "
-            f"find them. When the task is complete, respond with a short "
-            f"plain-text summary and stop calling tools."
+            f"Work the task. Use tools decisively. report_finding is ONLY "
+            f"for demonstrated high-impact business-rule violations with "
+            f"raw evidence and repro steps — everything else is preserved "
+            f"as an internal observation automatically. When the task is "
+            f"complete, respond with a short plain-text summary and stop "
+            f"calling tools."
         )
         return [
             {"role": "system", "content": system},
@@ -179,6 +182,7 @@ class BaseAgent:
         findings = await self.ctx.blackboard.list_findings()
         tasks = await self.ctx.blackboard.list_tasks()
         agents = await self.ctx.blackboard.agent_statuses()
+        observations = await self.ctx.blackboard.list_observations(limit=50)
 
         recent_findings = findings[:10]
         open_tasks = [t for t in tasks if t.status.value in ("pending", "assigned", "running")][:15]
@@ -186,6 +190,10 @@ class BaseAgent:
         f_lines = [
             f"  [{f.severity.value}] {f.id} {f.status.value} :: {f.title} ({f.category})"
             for f in recent_findings
+        ] or ["  (none)"]
+        o_lines = [
+            f"  {o.id} [{o.impact_category or o.category}] {o.title[:70]}"
+            for o in observations[:8]
         ] or ["  (none)"]
         t_lines = [
             f"  p{t.priority} {t.id} {t.assignee.value}:{t.status.value} :: {t.title}"
@@ -198,8 +206,12 @@ class BaseAgent:
         ] or ["  (none)"]
 
         return "\n".join([
-            f"Findings (last 10 of {len(findings)}):",
+            f"Findings (last 10 of {len(findings)} — only gate-passing candidates):",
             *f_lines,
+            "",
+            f"Internal observations (last 8 of {len(observations)} — gate-rejected "
+            "candidates; correlate them into chains before reporting):",
+            *o_lines,
             "",
             f"Open tasks (of {len(tasks)}):",
             *t_lines,

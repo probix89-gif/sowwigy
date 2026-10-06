@@ -63,14 +63,35 @@ class Notifier:
     # ------------------------------------------------------------------
 
     async def notify_finding(self, finding: Any) -> None:
+        # HIGH-IMPACT TRIAGE GATE (telegram layer): only findings that have
+        # been independently validated (status=confirmed/reported) AND carry
+        # HIGH/CRITICAL severity reach the operator. New/validating findings
+        # are logged but stay silent — the validation agent decides what is
+        # real, and the reporter loop publishes validated results.
         sev = finding.severity.value
+        status = finding.status.value
+        if status not in ("confirmed", "reported"):
+            log.info(
+                "notifier.finding_held",
+                id=finding.id, sev=sev, status=status,
+                reason="awaiting validation — not reported to operator",
+            )
+            return
+        if sev not in ("high", "critical"):
+            log.info(
+                "notifier.finding_below_threshold",
+                id=finding.id, sev=sev, status=status,
+                reason="severity below report threshold",
+            )
+            return
         mark = SEVERITY_MARK.get(sev, "•")
         text = (
-            f"{mark} <b>New finding</b> {escape(sev.upper())}\n"
+            f"{mark} <b>Validated finding</b> {escape(sev.upper())}\n"
             f"• id: {escape(finding.id)}\n"
             f"• title: {escape(finding.title)}\n"
             f"• category: {escape(finding.category)}\n"
             f"• by: {escape(finding.discovered_by.value)}\n"
+            f"• status: {escape(status)}\n"
             f"• at: {escape(fmt_ts(finding.discovered_at))}"
         )
         if finding.endpoint:

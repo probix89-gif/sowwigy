@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .schemas import AgentStatus, Finding, Task
+from .schemas import AgentStatus, Finding, Observation, Task
 
 
 _YAML_FENCE = re.compile(r"```(?:json|yaml)\n(.*?)```", re.DOTALL)
@@ -29,6 +29,7 @@ class Blackboard:
         self._lock = asyncio.Lock()
         self._findings: dict[str, Finding] = {}
         self._tasks: dict[str, Task] = {}
+        self._observations: dict[str, Observation] = {}
         self._agents: dict[str, AgentStatus] = {}
         self._narrative: dict[str, str] = {
             "mission": "",
@@ -73,6 +74,12 @@ class Blackboard:
                     self._agents[ao.name.value] = ao
                 except Exception:
                     pass
+            for o in obj.get("observations") or []:
+                try:
+                    oo = Observation(**o)
+                    self._observations[oo.id] = oo
+                except Exception:
+                    pass
             if isinstance(obj.get("narrative"), dict):
                 self._narrative.update(obj["narrative"])
         self._loaded = True
@@ -81,6 +88,7 @@ class Blackboard:
         state = {
             "findings": [f.model_dump(mode="json") for f in self._findings.values()],
             "tasks": [t.model_dump(mode="json") for t in self._tasks.values()],
+            "observations": [o.model_dump(mode="json") for o in self._observations.values()],
             "agents": [a.model_dump(mode="json") for a in self._agents.values()],
             "narrative": self._narrative,
             "updated_at": time.time(),
@@ -150,6 +158,34 @@ class Blackboard:
         async with self._lock:
             return sorted(self._findings.values(), key=lambda f: f.discovered_at, reverse=True)
 
+    # ---------- observations (internal evidence, not findings) ----------
+
+    async def add_observation(self, obs: Observation) -> Observation:
+        async with self._lock:
+            self._observations[obs.id] = obs
+            self._flush_locked()
+            return obs
+
+    async def list_observations(self, limit: int = 100) -> list[Observation]:
+        async with self._lock:
+            obs = sorted(self._observations.values(),
+                         key=lambda o: o.created_at, reverse=True)
+            return obs[:limit]
+
+    async def find_observations(self, text: str, limit: int = 20) -> list[Observation]:
+        """Keyword search across observations — lets agents reuse prior
+        evidence when building a chain."""
+        async with self._lock:
+            needle = (text or "").lower().strip()
+            if not needle:
+                return []
+            hits = [
+                o for o in self._observations.values()
+                if needle in (o.title + " " + o.description + " " + o.category).lower()
+            ]
+            hits.sort(key=lambda o: o.created_at, reverse=True)
+            return hits[:limit]
+
     # ---------- tasks ----------
 
     async def add_task(self, task: Task) -> Task:
@@ -202,4 +238,5 @@ class Blackboard:
         async with self._lock:
             self._findings.clear()
             self._tasks.clear()
+            self._observations.clear()
             self._flush_locked()

@@ -57,11 +57,12 @@ stealth:
   header_randomization: true
 
 auth:
-  # ---- OTP flow (primary) ----
+  # ---- OTP flow (primary) — Swiggy dweb auth API ----
   otp:
     enabled: true
-    send_endpoint: "https://www.swiggy.com/api/auth/send-otp"
-    verify_endpoint: "https://www.swiggy.com/api/auth/verify-otp"
+    check_endpoint: "https://www.swiggy.com/dapi/auth/signin-check"
+    send_endpoint: "https://www.swiggy.com/dapi/auth/sms-otp"
+    verify_endpoint: "https://www.swiggy.com/dapi/auth/otp-verify"
     resend_cooldown_s: 45
     # payload keys are configurable so agents can adapt if swiggy changes
     phone_field: "mobile"

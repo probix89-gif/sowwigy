@@ -83,8 +83,10 @@ class StealthCfg(BaseModel):
 
 class OtpAuthCfg(BaseModel):
     enabled: bool = True
-    send_endpoint: str = "https://www.swiggy.com/api/auth/send-otp"
-    verify_endpoint: str = "https://www.swiggy.com/api/auth/verify-otp"
+    # Swiggy dweb auth API (verified live 2026-10); flow: signin-check -> sms-otp -> otp-verify
+    check_endpoint: str = "https://www.swiggy.com/dapi/auth/signin-check"
+    send_endpoint: str = "https://www.swiggy.com/dapi/auth/sms-otp"
+    verify_endpoint: str = "https://www.swiggy.com/dapi/auth/otp-verify"
     resend_cooldown_s: int = 45
     phone_field: str = "mobile"
     otp_field: str = "otp"

@@ -18,7 +18,8 @@ from ..stealth.session import StealthSession
 log = get_logger(__name__)
 
 
-DEFAULT_PROBE = "https://www.swiggy.com/api/user/me"
+DEFAULT_PROBE = "https://www.swiggy.com/dapi/auth/signin-check"
+PROBE_BODY = {"mobile": "0000000000"}
 
 
 @dataclass
@@ -94,20 +95,33 @@ async def validate_cookies_async(
 ) -> CookieValidation:
     session.set_cookies(cookies)
     try:
-        resp = await session.api_get(probe_url)
+        # /dapi/auth/signin-check always answers JSON with statusCode 0 when the
+        # WAF token + transport are accepted; WAF challenges surface as 202.
+        resp = await session.api_post(probe_url, json_body=PROBE_BODY,
+                                      headers={"content-type": "application/json",
+                                               "origin": "https://www.swiggy.com",
+                                               "referer": "https://www.swiggy.com/"})
     except Exception as e:
         log.exception("cookie_validation.network_failed")
         return CookieValidation(ok=False, status=0, reason=f"network: {e}")
 
     body = resp.text[:400]
     if resp.status == 200:
-        # require some signal of authenticated identity, not a login wall
-        lower = resp.text.lower()
-        if "login" in lower and "phone" in lower and "otp" in lower:
+        try:
+            data = resp.json()
+        except Exception:
             return CookieValidation(ok=False, status=200,
-                                    reason="probe returned login page",
-                                    body_preview=body)
-        return CookieValidation(ok=True, status=200, body_preview=body)
+                                    reason="probe returned non-JSON", body_preview=body)
+        if isinstance(data, dict) and data.get("statusCode") == 0:
+            return CookieValidation(ok=True, status=200, body_preview=body)
+        return CookieValidation(ok=False, status=200,
+                                reason=f"probe statusCode={data.get('statusCode') if isinstance(data, dict) else '?'}",
+                                body_preview=body)
+
+    if resp.status == 202:
+        return CookieValidation(ok=False, status=202,
+                                reason="waf challenge (no valid aws-waf-token)",
+                                body_preview=body)
 
     if resp.status in (401, 403):
         return CookieValidation(ok=False, status=resp.status,

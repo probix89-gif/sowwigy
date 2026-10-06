@@ -53,15 +53,31 @@ class OtpFlow:
             remaining = int(self.cfg.resend_cooldown_s - (time.time() - self.pending.sent_at))
             raise OtpFlowError(f"resend cooldown: {remaining}s remaining")
 
+        headers = {
+            "content-type": "application/json",
+            "origin": _origin_of(self.cfg.send_endpoint),
+            "referer": _referer_of(self.cfg.send_endpoint),
+        }
+
+        # dweb flow: check the number first (registered? password?), then request the SMS OTP
+        check = await self.session.api_post(
+            self.cfg.check_endpoint,
+            json_body={self.cfg.phone_field: phone},
+            headers=headers,
+        )
+        if check.status == 200:
+            try:
+                cb = check.json()
+            except Exception:
+                cb = {}
+            if isinstance(cb, dict) and cb.get("statusCode") not in (0, None):
+                raise OtpFlowError(f"signin-check failed: {str(cb.get('statusMessage'))[:200]}")
+
         payload = {self.cfg.phone_field: phone}
         resp = await self.session.api_post(
             self.cfg.send_endpoint,
             json_body=payload,
-            headers={
-                "content-type": "application/json",
-                "origin": _origin_of(self.cfg.send_endpoint),
-                "referer": _referer_of(self.cfg.send_endpoint),
-            },
+            headers=headers,
         )
 
         try:
@@ -89,8 +105,8 @@ class OtpFlow:
             raise OtpFlowError("OTP expired — resend")
 
         payload = {
-            self.cfg.phone_field: self.pending.phone,
             self.cfg.otp_field: otp,
+            "newNumber": self.pending.phone,
         }
         resp = await self.session.api_post(
             self.cfg.verify_endpoint,
@@ -110,6 +126,11 @@ class OtpFlow:
 
         if resp.status >= 400:
             self.pending.last_error = f"{resp.status}: {str(body)[:200]}"
+            raise OtpFlowError(f"verify failed: {self.pending.last_error}")
+
+        # dweb API signals business-level failure via statusCode != 0 (HTTP stays 200)
+        if isinstance(body, dict) and body.get("statusCode") not in (0, None):
+            self.pending.last_error = f"statusCode {body.get('statusCode')}: {str(body.get('statusMessage'))[:200]}"
             raise OtpFlowError(f"verify failed: {self.pending.last_error}")
 
         cookies = self.session.cookies()

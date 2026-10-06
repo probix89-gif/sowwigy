@@ -41,6 +41,7 @@ from .tls import (
     engine_name,
     sanitize_url,
 )
+from .waf import is_waf_challenge
 
 log = get_logger(__name__)
 
@@ -142,6 +143,8 @@ class StealthSession:
         self._created_at = time.time()
         self._request_count = 0
         self._initial_url = initial_url
+        # AWS-WAF gate (lazy solver; only used when a 202 challenge is seen)
+        self.waf = None  # type: ignore[assignment]  # set via attach_waf()
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -152,6 +155,15 @@ class StealthSession:
             await self._session.close()
         except Exception:
             pass
+        if getattr(self, "waf", None):
+            try:
+                await self.waf.close()
+            except Exception:
+                pass
+
+    def attach_waf(self, waf_gate: Any) -> None:
+        """Attach a WafGate so 202 challenges auto-solve and the request retries."""
+        self.waf = waf_gate
 
     async def rotate(self) -> None:
         """Swap fingerprint + adapt TLS profile + reset engine. Keeps auth cookies."""
@@ -325,7 +337,33 @@ class StealthSession:
             elapsed_ms=elapsed,
         )
 
-        # 5. behavior post-response
+        # 5. AWS-WAF challenge handling: solve once via headless browser, then retry
+        if (
+            getattr(self, "waf", None) is not None
+            and status == 202
+            and is_waf_challenge(status, body)
+        ):
+            log.info("stealth.waf_challenge", url=safe_target_url)
+            solved = await self.waf.solve()
+            if solved:
+                await self.waf.apply(self)
+                # single retry of the same request
+                resp = await self._session.request(
+                    method=method.upper(),
+                    url=full_url,
+                    headers=req_headers,
+                    json=json_body if json_body is not None else None,
+                    data=data if data is not None else None,
+                    timeout=timeout,
+                    allow_redirects=allow_redirects,
+                )
+                status = int(getattr(resp, "status_code", 0) or getattr(resp, "status", 0) or 0)
+                resp_headers = dict(getattr(resp, "headers", {}) or {})
+                body = getattr(resp, "content", None)
+                if body is None:
+                    body = getattr(resp, "text", "").encode("utf-8", errors="replace")
+
+        # 6. behavior post-response
         retry_after = None
         try:
             ra = resp_headers.get("retry-after") or resp_headers.get("Retry-After")

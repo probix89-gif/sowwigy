@@ -23,6 +23,7 @@ from ..logging_setup import get_logger
 from ..state.schemas import SessionInfo
 from ..stealth.fingerprint import FingerprintPool
 from ..stealth.session import StealthSession
+from ..stealth.waf import WafGate
 from .cookies import CookieImporter, validate_cookies_async
 from .otp import OtpFlow, OtpFlowError
 from .vault import SessionVault
@@ -30,7 +31,7 @@ from .vault import SessionVault
 log = get_logger(__name__)
 
 
-DEFAULT_PROBE = "https://www.swiggy.com/api/user/me"
+DEFAULT_PROBE = "https://www.swiggy.com/dapi/auth/signin-check"
 
 
 @dataclass
@@ -66,6 +67,11 @@ class AuthManager:
             key=(cfg.secrets.swiggy_session_vault_key
                  if cfg.secrets and cfg.secrets.swiggy_session_vault_key else None),
         )
+        # AWS-WAF gate: lazily solves the challenge in headless Chromium when a
+        # 202 challenge is seen, then injects aws-waf-token cookies into the session.
+        waf_cfg = getattr(cfg, "browser", None)
+        self.waf = WafGate(self.session.fp, waf_cfg)
+        self.session.attach_waf(self.waf)
         self.otp = OtpFlow(cfg.auth.otp, self.session)
         self.importer = CookieImporter(self.session, probe_url=DEFAULT_PROBE)
         self._current: SessionInfo | None = None

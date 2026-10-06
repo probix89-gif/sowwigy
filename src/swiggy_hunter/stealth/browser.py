@@ -150,6 +150,10 @@ class Browser:
         assert self._page is not None
         await self._page.screenshot(path=path, full_page=True)
 
+    async def export_cookies(self) -> dict[str, str]:
+        """Public alias — used by the WAF gate to harvest challenge cookies."""
+        return await self._dump_cookies()
+
     async def _dump_cookies(self) -> dict[str, str]:
         if self._context is None:
             return {}

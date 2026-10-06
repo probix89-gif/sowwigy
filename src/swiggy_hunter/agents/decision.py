@@ -33,6 +33,17 @@ class DecisionAgent:
     name = AgentName.decision
     temperature = 0.45
 
+    # tools the decision-maker may use in its investigation phase,
+    # before it emits the plan JSON. Shell access is included so the
+    # planner can inspect the environment, check artifacts, run quick
+    # read-only commands (ls, cat, grep, curl probes) to plan better.
+    allow_tools = [
+        "shell", "file_read", "file_list",
+        "query_blackboard",
+    ]
+    max_investigation_iterations = 6
+    max_tool_calls_per_turn = 4
+
     def __init__(self, ctx: AgentContext, directives: DirectiveQueue | None = None):
         self.ctx = ctx
         self.status = AgentStatus(name=self.name)
@@ -57,6 +68,11 @@ class DecisionAgent:
                 {"role": "system", "content": DECISION_MAKER_PROMPT},
                 {"role": "user", "content": snapshot},
             ]
+
+            # ---- investigation phase: the planner may gather facts via
+            # tools (shell, files, blackboard, web) before committing to a
+            # plan. Bounded so a cycle stays fast.
+            await self._investigate(messages)
 
             assistant = await self.ctx.llm.chat(
                 agent=self.name.value,
@@ -105,6 +121,68 @@ class DecisionAgent:
             log.exception("decision.cycle_failed")
             await self._set_status("error", None)
             return {"ok": False, "reason": f"{type(e).__name__}: {e}"}
+
+    # ------------------------------------------------------------------
+    # tool investigation phase
+    # ------------------------------------------------------------------
+
+    async def _investigate(self, messages: list[dict[str, Any]]) -> None:
+        """Bounded tool loop: lets the decision-maker gather facts with
+        its allowed tools (shell, files, blackboard, web) before planning.
+        Any tool errors are fed back as tool results; the loop ends when
+        the model stops calling tools or the iteration cap is hit."""
+        if self.ctx.registry is None:
+            return
+        schemas = self.ctx.registry.schemas(allow=self.allow_tools)
+        if not schemas:
+            return
+
+        for _ in range(self.max_investigation_iterations):
+            if self.ctx.is_stopped():
+                return
+            try:
+                assistant = await self.ctx.llm.chat(
+                    agent=self.name.value,
+                    messages=messages,
+                    temperature=self.temperature,
+                    tools=schemas,
+                )
+            except BudgetExceeded:
+                return
+            tool_calls = assistant.get("tool_calls") or []
+            if not tool_calls:
+                return  # model is done investigating
+
+            messages.append({
+                "role": "assistant",
+                "content": assistant.get("content") or "",
+                "tool_calls": tool_calls,
+            })
+            for tc in tool_calls[: self.max_tool_calls_per_turn]:
+                result = await self._dispatch_tool(tc)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": result,
+                })
+
+    async def _dispatch_tool(self, tool_call: dict[str, Any]) -> str:
+        fn = tool_call.get("function") or {}
+        name = fn.get("name", "")
+        raw_args = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        except json.JSONDecodeError:
+            args = {}
+
+        log.info("decision.tool_call", tool=name)
+        try:
+            result = await self.ctx.registry.dispatch(name, args)
+            out = result.to_content()
+        except Exception as e:
+            out = f"tool error: {type(e).__name__}: {e}"
+        # keep transcripts bounded for the planning context
+        return out[:4000]
 
     # ------------------------------------------------------------------
     # snapshot
